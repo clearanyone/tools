@@ -1,0 +1,14 @@
+[Unit]
+Description=app_health_check deamon
+After=rc-local.service
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+WorkingDirectory=/home/prometheus
+ExecStart=/data/program/prometheus_exporter/app_health_check.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
