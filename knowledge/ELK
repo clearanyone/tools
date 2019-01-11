@@ -1,0 +1,394 @@
+
+一、日志采集										filebeat
+---------------------------------------------------------------------------------------
+						192.168.20.110          
+二、数据处理，日志缓存		192.168.20.111			jdk+logstash+kafka+zookeeper
+						192.168.20.112
+---------------------------------------------------------------------------------------
+三、转发					192.168.20.113			jdk+Logstash
+---------------------------------------------------------------------------------------
+四、持久、检索			192.168.9.114			jdk+elasticsearch
+						192.168.9.115			jdk+jdk+elasticsearch
+---------------------------------------------------------------------------------------
+五、展示层				192.168.9.116			jdk+kibana+elasticsearch(master)
+---------------------------------------------------------------------------------------
+
+##一定要注意防火墙。。。
+
+1、安装JDK环境
+cat >> /etc/profile <<EOF
+JAVA_HOME=/data/program/jdk1.8
+PATH=\$PATH:\$JAVA_HOME/bin
+EOF	
+
+2、内核优化
+cat >>/etc/sysctl <<EOF
+fs.file-max=65535
+vm.max_map_count = 655360
+EOF
+
+sysctl -p
+
+cat >>/etc/security/limits.conf <<EOF
+* soft nofile 65536
+* hard nofile 131072
+* soft nproc 2048
+* hard nproc 4096
+EOF
+###此文件修改后需要重新登录用户，才会生效
+
+（四、五）3、Elasticsearch集群安装配置
+
+#ES下载安装
+wget https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-6.3.0.tar.gz
+tar zxvf elasticsearch-6.3.0.tar.gz
+mv elasticsearch-6.3.0.tar.gz /data/program/elasticsearch
+
+#创建数据和日志目录
+mkdir /data/program/elasticsearch/data
+mkdir /data/program/elasticsearch/logs
+
+#添加ES启动用户
+useradd elk
+chown -R elk:elk /data/program/elasticsearch
+
+#创建如下配置文件(config/elasticsearch.yml)(集群其它节点只修改node.name即可)
+cd /data/program/elasticsearch
+echo "" > config/elasticsearch.yml 
+
+cat > config/elasticsearch.yml <<EOF
+cluster.name: TT-LOGS
+node.name: t6
+path.data: /data/program/elasticsearch/data
+path.logs: /data/program/elasticsearch/logs
+
+bootstrap.memory_lock: false
+bootstrap.system_call_filter: false
+network.host: 0.0.0.0
+http.port: 9200
+transport.tcp.port: 9300
+discovery.zen.ping.unicast.hosts: ["192.168.9.116:9300", "192.168.9.115:9300", "192.168.9.114:9300"]
+discovery.zen.minimum_master_nodes: 2m
+
+http.cors.enabled: true
+http.cors.allow-origin: "*"
+http.cors.allow-credentials: true
+EOF
+
+
+#修改JVM内存（config/jvm.options）
+-Xms2g
+-Xmx2g
+
+#启动集群
+su elk && cd /data/program/elasticsearch
+./bin/elasticsearch -d
+
+#安装elasticsearch-head插件
+wget https://npm.taobao.org/mirrors/node/latest-v4.x/node-v4.5.0-linux-x64.tar.gz
+#配置下环境变量,编辑/etc/profile添加
+export NODE_HOME=/usr/local/node-v4.5.0-linux-x64
+export PATH=$PATH:$NODE_HOME/bin/
+export NODE_PATH=$NODE_HOME/lib/node_modules
+#执行 source /etc/profile
+
+#安装npm
+npm install -g cnpm --registry=https://registry.npm.taobao.org
+npm install -g grunt
+npm install -g grunt-cli --registry=https://registry.npm.taobao.org --no-proxy
+wget https://github.com/mobz/elasticsearch-head/archive/master.zip
+unzip master.zip
+
+#进入elasticsearch-head-master目录，执行下面命令
+npm install
+
+
+#安装完成之后，修改服务器监听地址,目录：elasticsearch-head/Gruntfile.js,增加hostname属性，设置为*
+connect: {
+    server: {
+        options: {
+            port: 9100,
+            hostname: '0.0.0.0',
+            base: '.',
+            keepalive: true
+        }
+    }
+}
+#通过命令grunt server启动head
+
+
+
+#cat > restart.sh <<EOF
+#!/bin/bash
+p_num=`jps|grep Elasticsearch|wc -l`
+if [[ \$p_num > 0 ]];then
+        jps|grep Elasticsearch|awk '{print $1}'|xargs kill
+        echo "ES成功关闭"
+else
+        echo "ES进程已经关闭"
+fi
+cd /data/program/elasticsearch
+
+runuser -l elk -c "/data/program/elasticsearch/bin/elasticsearch -d"
+if [[ $? == 0 ]];then
+        echo "ES成功启动"
+else
+        echo "ES启动失败"
+fi
+EOF
+
+
+（四、五）4、安装配置kibana
+wget https://artifacts.elastic.co/downloads/kibana/kibana-6.3.0-linux-x86_64.tar.gz
+tar zxvf kibana-6.3.0-linux-x86_64.tar.gz
+mv kibana-6.3.0-linux-x86_64 /data/program/kibana
+
+cd /data/program/kibana
+#配置文件在config的kibana.yml中，此处我仅修改了
+server.port: 5601
+server.host: "10.112.101.90"
+elasticsearch.url: "http://10.112.101.90:9200"
+
+#运行
+bin/kibana
+
+# 启动脚本
+cat > restart <<EOF
+#!/bin/bash
+p_num=`ps -ef|grep node|wc -l`
+if [[ $p_num > 0 ]];then
+        ps -ef|grep node|awk '{print $2}'|xargs kill
+        echo "kibana成功关闭"
+else
+        echo "kibana进程已经关闭"
+fi
+cd /data/program/kibana
+
+runuser -l elk -c "nohup /data/program/kibana/bin/kibana &"
+if [[ $? == 0 ]];then
+        echo "kibana成功启动"
+else
+        echo "kibana启动失败"
+fi
+EOF
+
+
+（三）5、logstash安装配置
+wget https://artifacts.elastic.co/downloads/logstash/logstash-6.3.0.tar.gz
+tar zxvf logstash-6.3.0.tar.gz
+mv logstash-6.3.0 /data/program/logstash
+
+#编辑配置文件，这里写一个测试的（把一下内容写进一个配置文件）
+input {
+        file {
+                path => ["/tmp/test_data"]
+                codec => json {
+                        charset => "UTF-8"
+                }
+        }
+}
+
+output {
+        elasticsearch {
+                hosts => ["172.168.254.26:9200"]
+                index => "lalala-%{+YYYY.MM.dd}"
+                document_type => "test"
+                #user => "elastic"
+                #password => "changeme"
+        }
+
+#启动logstash
+cd /data/program/logstash
+nohup ./bin/logstash -f config/test.conf &> run.log &
+
+
+#启动脚本
+#cat > restart.sh <<EOF
+#!/bin/bash
+p_num=`jps|grep Logstash|wc -l`
+if [[ \$p_num > 0 ]];then
+        jps|grep Logstash|awk '{print $1}'|xargs kill
+        echo "Logstash成功关闭"
+else
+        echo "Logstash进程已经关闭"
+fi
+cd /data/program/logstash
+
+runuser -l elk -c "nohup /data/program/logstash/bin/logstash -f /data/program/logstash/config/file_to_es.conf &> /data/program/logstash/logs/run.log &"
+if [[ $? == 0 ]];then
+        echo "Logstash成功启动"
+else
+        echo "Logstash启动失败"
+fi
+EOF
+
+
+#制造些假数据进行测试
+cat > /tmp/test_data <<EOF
+{"user": "test", "age": "11"}
+{"user": "test1", "age": "12"}
+{"user": "test2", "age": "13"}
+{"user": "test3", "age": "14"}
+{"user": "test4", "age": "15"}
+{"user": "test5", "age": "16"}
+{"user": "test6", "age": "17"}
+{"user": "test7", "age": "18"}
+{"user": "test8", "age": "19"}
+{"user": "test9", "age": "20"}
+EOF
+
+#访问kibana，创建索引(management-->index patterns-->create index patterns)
+#如果logstatsh已经开始往elasticsearch中推送数据，则在创建index下会有显示。
+
+(二)6、安装配置zookeeper集群
+wget http://apache.01link.hk/zookeeper/stable/zookeeper-3.4.12.tar.gz
+tar zxvf zookeeper-3.4.12.tar.gz
+mv zookeeper-3.4.12.tar.gz /data/program/zookeeper
+cd /data/program/zookeeper/conf
+cp zoo_sample.cfg zoo.cfg
+cat > zoo.cfg <<EOF
+tickTime=2000
+initLimit=10
+syncLimit=5
+dataDir=/data/program/zookeeper/data
+clientPort=2181
+server.1=192.168.20.110:12888:13888
+server.2=192.168.20.111:12888:13888
+server.3=192.168.20.112:12888:13888
+EOF
+
+#创建数据目录,写入id
+cd /data/program/zookeeper
+mkdir -p data
+echo 1 > ./data/myid
+
+#启动服务
+cd data/program/zookeeper
+./bin/zkServer.sh start
+
+#查看集群状态
+./bin/zkServer.sh status
+
+#以上所有节点配置相同，myid的值不同。
+
+(二)7、安装配置kafka集群
+wget http://apache.01link.hk/kafka/1.1.0/kafka_2.11-1.1.0.tgz
+tar zxvf kafka_2.11-1.1.0.tgz
+mv kafka_2.11-1.1.0 /data/program/kafka
+
+#修改配置文件如下
+cd /data/program/kafka/config
+mv server.properties  server.properties.bak
+cat >  server.properties  <<EOF
+broker.id=1
+port = 9092
+host.name = 192.168.20.110
+log.dirs=/data/program/kafka/logs
+log.retention.hours=1
+zookeeper.connect=192.168.20.110:2181,192.168.20.111:2181,192.168.20.112:2181
+default.replication.factor=2
+EOF
+
+#创建日志目录
+cd ..
+mkdir -p logs
+#以上配置使用其它所有节点，修改broker.id和host.name即可。
+#配置好后，启动集群
+./bin/kafka-server-start.sh -daemon config/server.properties
+
+#创建topic，消费者和生产者进行测试。
+#创建topic
+./bin/kafka-topics.sh --create --zookeeper 192.168.20.110:2181 --replication-factor 1 --partitions 2 --topic logview
+#创建消费者
+./bin/kafka-console-consumer.sh --zookeeper 192.168.20.110:2181 --topic logview --from-beginning
+#另一个节点创建一个生产者
+./bin/kafka-console-producer.sh --broker-list 192.168.20.110:9092 --topic logview
+
+#生产者创建完毕后，输入任何字符，都会在消费者节点看到，说明集群简历成功。
+
+
+(二)8、安装配置logstatsh
+wget https://artifacts.elastic.co/downloads/logstash/logstash-6.3.0.tar.gz
+tar zxvf logstash-6.3.0.tar.gz
+mv logstash-6.3.0 /data/program/logstash
+
+#创建配置文件，从filebeat获取日志，输出到kafka集群
+cd /data/program/logstash/config
+
+cat > filebeat_to_kafka.conf <<EOF
+input {
+    beats {
+        port => 5044
+        }
+}
+
+output {
+    kafka {
+        bootstrap_servers => "192.168.20.110:9092,192.168.20.111:9092,192.168.20.112:9092"
+        topic_id => "logview"
+        }
+}
+EOF
+
+#启动logstash
+cd /data/program/logstash
+nohup ./bin/logstash -f config/filebeat_to_kafka.conf &> run.log &
+
+#
+
+(一)9、在应用主机安装filebeat
+wget https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-6.3.0-linux-x86_64.tar.gz
+tar zxvf filebeat-6.3.0-linux-x86_64.tar.gz
+mv filebeat-6.3.0-linux-x86_64 /data/programe/filebeat
+
+#修改配置文件
+cd /data/programe/filebeat
+cat > filebeat.yml <<EOF
+filebeat.inputs:
+- type: log
+  enabled: true
+  paths:
+    - /data/test.log
+filebeat.config.modules:
+  path: \${path.config}/modules.d/*.yml
+  reload.enabled: false
+setup.template.settings:
+  index.number_of_shards: 3
+output.logstash:
+  hosts: ["192.168.20.110:5044"
+EOF
+
+#启动filebeat
+nohup ./filebeat -c filebeat.yml > /dev/null &
+
+
+
+
+#x-pack 破解+用户权限
+#替换elasticsearch/module/x-pack/x-pack-core/x-pack-core-6.3.0.jar 的文件。
+#再修改elasticsearch/config/elasticsearch.yml 文件，添加如下项，然后重启替换elasticsearch
+xpack.security.enabled: false。#添加此项后才能上传listens文件。
+#重启后上传listens文件。到此x-pack破解成功
+
+#elasticsearch配置安全选项，启动用x-pack，启用ssl
+#修改elasticsearch/config/elasticsearch.yml 文件，添加如下项
+xpack.security.enabled: true
+xpack.security.transport.ssl.enabled: true
+xpack.security.transport.ssl.verification_mode: certificate
+xpack.security.transport.ssl.keystore.path: certs/elastic-certificates.p12
+xpack.security.transport.ssl.truststore.path: certs/elastic-certificates.p12
+
+#然后生成证书
+./bin/elasticsearch-certutil ca
+./bin/elasticsearch-certutil cert --ca elastic-stack-ca.p12
+mkdir config/certs
+cp elastic-certificates.p12 config/certs
+
+#然后将证书发布到所有节点。然后所有节点执行如下：
+./bin/elasticsearch-keystore add xpack.security.transport.ssl.keystore.secure_password
+./bin/elasticsearch-keystore add xpack.security.transport.ssl.truststore.secure_password
+
+#重启所有节点完成。
+#注释logstash和kibana也需要配置密码才能访问 elasticsearch
+
+

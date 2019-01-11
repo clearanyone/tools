@@ -1,0 +1,6 @@
+1、promethues+altermanager+grafnan+dingding_webhook.   监控预警
+2、jumpserver  跳板机
+3、ELK+kafka+zookeeper+filebeat。  日志收集
+4、jenkins 自动化集成
+5、k8s+docker+helm.  容器发布
+6、

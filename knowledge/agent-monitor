@@ -1,0 +1,54 @@
+mkdir -p /data/src /data/program
+
+cd /data/src
+wget https://github.com/prometheus/node_exporter/releases/download/v0.16.0/node_exporter-0.16.0.linux-amd64.tar.gz
+tar zxvf node_exporter-0.16.0.linux-amd64.tar.gz
+mv node_exporter-0.16.0.linux-amd64 /data/program/node_exporter
+cd /data/program/node_exporter
+touch start.sh
+cat > start.sh <<EOF
+#!/bin/bash
+nohup ./node_exporter &
+EOF
+chmod 755 start.sh
+
+
+#touch /usr/lib/systemd/system/node_exporter.service 
+#or
+#touch /var/lib/systemd/deb-systemd-helper-enabled/node_exporter.service 
+
+cat > /usr/lib/systemd/system/node_exporter.service <<EOF
+[Unit]
+Description=node_exporter
+Documentation=https://prometheus.io/
+After=network.target
+
+[Service]
+Type=simple
+User=prometheus
+ExecStart=/data/program/node_exporter/node_exporter
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+
+huahuashijie77**
+
+
+
+./certbot-auto --server https://acme-v02.api.letsencrypt.org/directory -d "*.zbgvip.com" --manual --preferred-challenges dns-01 certonly
+
+
+
+./certbot-auto certonly  -d *.zbgvip.com --manual --preferred-challenges dns --server https://acme-v02.api.letsencrypt.org/directory
+
+
+{
+    "host":"172.31.236.38",
+    "port":9001,
+    "timeout":60
+    //"seckey":""
+  }
